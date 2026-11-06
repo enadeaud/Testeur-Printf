@@ -20,6 +20,23 @@ static int			g_out[2];
 static int			g_ret[2];
 static pid_t		g_pid;
 static char			g_long[3001];
+static int			g_strict;	/* TESTER_STRICT: stdout ferme avant le debut et au milieu */
+static int			g_cut = -1;	/* dans le fils: stdout ferme juste avant le write numero g_cut */
+static int			g_nwrites;	/* nombre de write(1, ...) faits par ft_printf */
+
+/* link avec --wrap=write: chaque write de libftprintf.a passe par ici */
+ssize_t	__real_write(int fd, const void *buf, size_t n);
+
+ssize_t	__wrap_write(int fd, const void *buf, size_t n)
+{
+	if (fd == 1)
+	{
+		if (g_nwrites == g_cut)
+			close(1);
+		g_nwrites++;
+	}
+	return (__real_write(fd, buf, n));
+}
 
 static void	put_esc(FILE *f, const char *s, int len)
 {
@@ -49,7 +66,7 @@ static FILE	*open_log(void)
 }
 
 /* fork: le fils ecrit dans un pipe, un crash ou une boucle infinie ne tue que lui */
-static int	start(void)
+static int	start(int cut)
 {
 	if (pipe(g_out) || pipe(g_ret))
 		exit(3);
@@ -63,6 +80,10 @@ static int	start(void)
 	close(g_ret[0]);
 	dup2(g_out[1], 1);
 	close(g_out[1]);
+	g_cut = cut;
+	g_nwrites = 0;
+	if (cut == 0)
+		close(1);
 	alarm(5);
 	return (1);
 }
@@ -71,10 +92,12 @@ static void	stop(int r)
 {
 	fflush(stdout);
 	write(g_ret[1], &r, sizeof r);
+	write(g_ret[1], &g_nwrites, sizeof g_nwrites);
 	_exit(0);
 }
 
-static void	finish(const char *call, const char *exp, int eret)
+/* retourne le nombre de write du fils, pour savoir ou couper stdout en strict */
+static int	finish(const char *call, const char *exp, int eret)
 {
 	static char	got[65536];
 	int			glen = 0;
@@ -82,6 +105,7 @@ static void	finish(const char *call, const char *exp, int eret)
 	int			n;
 	int			st;
 	int			ok;
+	int			nw = 0;
 	FILE		*f;
 
 	close(g_out[1]);
@@ -89,6 +113,8 @@ static void	finish(const char *call, const char *exp, int eret)
 	while (glen < (int)sizeof got && (n = read(g_out[0], got + glen, sizeof got - glen)) > 0)
 		glen += n;
 	n = read(g_ret[0], &gret, sizeof gret);
+	if (read(g_ret[0], &nw, sizeof nw) != sizeof nw)
+		nw = 0;
 	close(g_out[0]);
 	close(g_ret[0]);
 	waitpid(g_pid, &st, 0);
@@ -96,10 +122,10 @@ static void	finish(const char *call, const char *exp, int eret)
 	ok = !WIFSIGNALED(st) && n == sizeof gret && gret == eret
 		&& glen == eret && !memcmp(got, exp, eret);
 	if (ok)
-		return ;
+		return (nw);
 	g_failed++;
 	if (!(f = open_log()))
-		return ;
+		return (nw);
 	if (WIFSIGNALED(st))
 	{
 		g_crashes++;
@@ -115,14 +141,57 @@ static void	finish(const char *call, const char *exp, int eret)
 		fprintf(f, "  (retour %d)\n\n", gret);
 	}
 	fclose(f);
+	return (nw);
+}
+
+/* stdout ferme: un write echoue, ft_printf doit renvoyer -1 comme printf */
+static void	finish_closed(const char *call, int cut)
+{
+	char	buf[4096];
+	int		gret = 0;
+	int		n;
+	int		st;
+	FILE	*f;
+
+	close(g_out[1]);
+	close(g_ret[1]);
+	while (read(g_out[0], buf, sizeof buf) > 0)
+		;
+	n = read(g_ret[0], &gret, sizeof gret);
+	close(g_out[0]);
+	close(g_ret[0]);
+	waitpid(g_pid, &st, 0);
+	g_total++;
+	if (!WIFSIGNALED(st) && n == sizeof gret && gret == -1)
+		return ;
+	g_failed++;
+	if (WIFSIGNALED(st))
+		g_crashes++;
+	if (!(f = open_log()))
+		return ;
+	if (cut == 0)
+		fprintf(f, "[STDOUT FERME] ft_printf(%s)\n  stdout ferme avant le debut", call);
+	else
+		fprintf(f, "[STDOUT FERME] ft_printf(%s)\n  stdout ferme au milieu, apres %d write", call, cut);
+	if (WIFSIGNALED(st))
+		fprintf(f, ": %s (signal %d)\n\n", WTERMSIG(st) == SIGALRM ? "timeout" : "crash", WTERMSIG(st));
+	else
+		fprintf(f, ": retour attendu -1, obtenu %d\n\n", gret);
+	fclose(f);
 }
 
 #define T(...) do { \
 	char	e_[8192]; \
 	int		r_ = snprintf(e_, sizeof e_, __VA_ARGS__); \
 	if (g_vg) { ft_printf(__VA_ARGS__); break ; } \
-	if (start()) stop(ft_printf(__VA_ARGS__)); \
-	finish(#__VA_ARGS__, e_, r_); \
+	if (start(-1)) stop(ft_printf(__VA_ARGS__)); \
+	int		nw_ = finish(#__VA_ARGS__, e_, r_); \
+	/* strict: coupe avant le debut (0) puis avant chaque write (20 coupes max) */ \
+	for (int k_ = 0; g_strict && r_ > 0 && k_ < (nw_ ? nw_ : 1); k_ += nw_ / 20 + 1) \
+	{ \
+		if (start(k_)) stop(ft_printf(__VA_ARGS__)); \
+		finish_closed(#__VA_ARGS__, k_); \
+	} \
 } while (0)
 
 static void	test_c(void)
@@ -409,6 +478,7 @@ int	main(int ac, char **av)
 #undef X
 		return (0);
 	}
+	g_strict = getenv("TESTER_STRICT") != NULL;
 	g_vg = ac == 3 && !strcmp(av[1], "--vg");
 	if (g_vg)
 		dup2(open("/dev/null", O_WRONLY), 1);

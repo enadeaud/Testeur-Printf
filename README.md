@@ -11,6 +11,7 @@ rubben mix                 # plusieurs conversions dans un meme appel
 rubben ~/ft_printf d       # avec un chemin
 Rubben bonus               # tout + make bonus + tests des flags (le bonus n'est jamais lance sans ce mot)
 rubben precision diese     # un groupe bonus cible (active make bonus)
+Rubben --strict            # (ou -s) en plus: stdout ferme avant le debut et au milieu de chaque test
 ```
 
 Sans chemin: dossier courant s'il contient `ft_printf.h`, sinon le dossier parent du tester.
@@ -26,4 +27,7 @@ Sans chemin: dossier courant s'il contient `ft_printf.h`, sinon le dossier paren
 - Bonus (`bonus`, `--bonus` ou `-b`): regle `bonus`, pas de relink sur `make bonus`, fichiers `*_bonus.c`,
   puis les groupes `largeur` (%5d), `moins` (-), `zero` (0), `precision` (.), `diese` (#), `plus` (+), `espace` ( ).
   Seules les combinaisons definies par printf sont testees (pas de `%05s` ni de `%#d`).
+- `--strict`: chaque test est relance avec stdout ferme avant le debut de l'appel, puis ferme au milieu
+  (juste avant le 1er, 2e, ... `write`, 20 coupes max par test). Comme printf, ft_printf doit renvoyer `-1`
+  sans crasher. Les `write` de `libftprintf.a` sont interceptes avec `-Wl,--wrap=write`.
 - Les erreurs sont ecrites dans `errors/<conversion>.txt` (appel, attendu, obtenu).

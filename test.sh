@@ -1,6 +1,7 @@
 #!/bin/bash
 # usage: rubben [chemin_vers_ft_printf] [bonus] [conversion ...]   (c s p d i u x X % mix)
 #   bonus: make bonus + groupes largeur moins zero precision diese plus espace
+#   --strict (ou -s): stdout ferme avant le debut et au milieu de chaque test, retour -1 attendu
 #   sans chemin: le dossier courant s'il contient ft_printf.h, sinon le dossier parent du tester
 SELF=$(realpath "$0")
 DIR=$(dirname "$SELF")
@@ -51,7 +52,8 @@ ALL=" c s p d i u x X pourcent mix "
 BALL=" largeur moins zero precision diese plus espace "
 CONVS=""; BONUS=""; TARGETED=0
 for a in "$@"; do
-	case $a in %|%%|pourcent) a=pourcent ;; %*) a=${a#%} ;; bonus|--bonus|-b) BONUS=1; continue ;; esac
+	case $a in %|%%|pourcent) a=pourcent ;; %*) a=${a#%} ;; bonus|--bonus|-b) BONUS=1; continue ;;
+		--strict|-s|strict) export TESTER_STRICT=1; continue ;; esac
 	TARGETED=$((TARGETED + 1))
 	if [[ "$ALL" == *" $a "* ]]; then CONVS="$CONVS $a"
 	elif [[ "$BALL" == *" $a "* ]]; then CONVS="$CONVS $a"; BONUS=1
@@ -59,6 +61,7 @@ for a in "$@"; do
 done
 [ $TARGETED != 0 ] && [ -z "$CONVS" ] && exit 1
 [ $TARGETED = 0 ] && CONVS=$ALL && [ -n "$BONUS" ] && CONVS="$ALL$BALL"
+[ -n "$TESTER_STRICT" ] && echo "  ${R}${B}MODE STRICT${N} ${D}— stdout ferme avant le debut et au milieu de chaque test (retour -1 attendu)${N}"
 [ -n "$BONUS" ] && echo "  ${M}${B}MODE BONUS${N} ${D}— make bonus, flags '-0.# +' et largeur${N}"
 
 [ $TARGETED = 0 ] && section "Makefile & regles"
@@ -132,7 +135,7 @@ if [ $TARGETED = 0 ]; then
 	fi
 fi
 
-cc -g -w -fno-builtin tester.c "$PF/libftprintf.a" -o tester 2>"$DIR/.make.log" \
+cc -g -w -fno-builtin tester.c "$PF/libftprintf.a" -Wl,--wrap=write -o tester 2>"$DIR/.make.log" \
 	|| { echo "    $KOS compilation du tester echouee:"; sed 's/^/      /' "$DIR/.make.log"; exit 1; }
 
 VG=$(command -v valgrind)
@@ -176,7 +179,7 @@ for c in $CONVS; do
 	esac
 	printf "    ${B}%-14s${N} %s  %s\n" "$label" "$res" "$vg"
 	if [ -f "$ERR/$c.txt" ]; then
-		first=$(grep -m1 -A1 -E '^\[(KO|CRASH|TIMEOUT|VALGRIND)' "$ERR/$c.txt" | tr -s ' ' | tr '\n' ' ' | cut -c1-90)
+		first=$(grep -m1 -A1 -E '^\[(KO|CRASH|TIMEOUT|STDOUT FERME|VALGRIND)' "$ERR/$c.txt" | tr -s ' ' | tr '\n' ' ' | cut -c1-90)
 		printf "      ${D}↳ %s${N}\n" "$first"
 	fi
 done
